@@ -1,0 +1,25 @@
+# Local generated data
+DATASETS/
+logs/
+
+# Large data files
+*.h5
+*.mat
+*.npy
+*.npz
+*.pkl
+*.pt
+*.pth
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environments
+.env
+.venv/
+venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
