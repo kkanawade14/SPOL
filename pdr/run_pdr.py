@@ -10,7 +10,7 @@ Single entry point for all PDR experiments.
 Replaces:  BSNQ_PDR_U.py, BSNQ_PDR_P.py, BSNQ_PDR_phi.py, NSB_PDR_U.py, NSB_PDR_P.py
 """
 
-import os, math, gc, argparse, json
+import os, math, gc, argparse, yaml
 os.environ["DIJITSO_CACHE_DIR"] = os.path.expanduser("~/.cache/dijitso")
 from datetime import datetime
 import numpy as np
@@ -50,7 +50,8 @@ def make_l2_norm_fn(V):
 #  Main
 # ──────────────────────────────────────────
 
-def main():
+if __name__ == "__main__":
+
     parser = argparse.ArgumentParser(description="PDR recovery experiment")
     parser.add_argument("--experiment", type=str, required=True,
                         help="Experiment name: bsnq, nsb")
@@ -59,10 +60,9 @@ def main():
     parser.add_argument("--key",        type=str, required=True,
                         help="Coefficient key: logKL, aff_S3, aff_F9")
     parser.add_argument("--level",      type=int, default=3,
-                        help="Mesh refinement / sparse grid level")
+                        help=" sparse grid level")
     parser.add_argument("--m_schedule", type=int, nargs="+", default=None,
-                        help="Training sample schedule (ascending). "
-                             "Overrides config if given.")
+                        help="Training sample schedule (ascending)")
     parser.add_argument("--seed",       type=int, default=None)
     parser.add_argument("--total_trials", type=int, default=None)
     args = parser.parse_args()
@@ -88,6 +88,7 @@ def main():
     trials     = args.total_trials or cfg["total_trials"]
     data_dir   = build_data_dir(cfg["folder"], args.key, dim, args.level)
     norm_type  = var_cfg["norm_type"]
+    m_train = sum(m_schedule)
 
     # Validate schedule
     if len(m_schedule) > 1:
@@ -107,15 +108,15 @@ def main():
     os.makedirs(outdir)
 
     # Save config for reproducibility
-    with open(os.path.join(outdir, "config.json"), "w") as f:
-        json.dump({
+    with open(os.path.join(outdir, "config.yaml"), "w") as f:
+        yaml.safe_dump({
             "experiment": args.experiment, "variable": args.variable,
             "key": args.key, "level": args.level,
             "dim": dim, "seed": seed, "pmax": pmax, "max_iter": max_iter,
             "tol": tol, "m_schedule": m_schedule, "trials": trials,
             "norm_type": norm_type, "meshname": meshname,
             "data_dir": data_dir,
-        }, f, indent=2)
+    }, f, sort_keys=False)
 
     # ── Load data ──
     # load_data auto-detects HDF5 vs legacy .mat
@@ -127,14 +128,13 @@ def main():
     print("Loading test data...")
     test = load_data(data_dir, "test", coeff_key, norm_key)
 
-    train_sol = train["solutions"]   # (m_train, K)
-    train_X   = train["params"]      # (m_train, dim)
+    train_sol = train["solutions"]   # (m_pool, K)
+    train_X   = train["params"]      # (m_pool, dim)
     test_sol  = test["solutions"]    # (m_test, K)
     test_X    = test["params"]       # (m_test, dim)
     test_W    = test["weights"]      # (m_test,)
     test_norms_true = test["norms"]  # (m_test,)
 
-    m_train = train_sol.shape[0]
     K       = train_sol.shape[1]
 
     print(f"Train: {train_sol.shape} | Test: {test_sol.shape} | K={K}")
@@ -154,40 +154,41 @@ def main():
         raise ValueError(f"Unknown norm_type: {norm_type}")
 
     # ── Legendre basis ──
-    Lambda = multiidx_gen(dim, hyperbolic_cross_rule, pmax)
-    N = Lambda.shape[0]
+    Lambda = multiidx_gen(dim, HCfunc, pmax).astype(int)
+    N = len(Lambda)
+    print('Generated multi index set Lambda of shape', Lambda.shape)
+    print('Using', N, 'basis functions with HC index set')
     d_pow = 2.0 ** dim
 
-    print(f"Basis size N={N} | dim={dim} | pmax={pmax}")
-
-    # ── Trials ──
     for trial in range(trials):
+        current_seed = seed + trial
+    
         print(f"\n{'='*60}")
-        print(f"Trial {trial + 1}/{trials} | seed={seed}")
+        print(f"Trial {trial + 1}/{trials} | seed={current_seed}")
         print(f"{'='*60}")
 
-        np.random.seed(seed)
-        picked = np.array([], dtype=int)
-        pool   = np.arange(m_train, dtype=int)
+        rng = np.random.default_rng(current_seed)
+    
+        pool = np.arange(m_train)
+        rng.shuffle(pool)
+    
         prev_m = 0
-
         for m in m_schedule:
-            bsize = m - prev_m
-            idx   = np.random.choice(len(pool), size=bsize, replace=False)
-            picked = np.concatenate([picked, pool[idx]])
-            pool   = np.delete(pool, idx)
-
+            
+            new_picks = pool[prev_m:m] 
+            all_picked = pool[:m]      
             print(f"\n--- m={m} ({bsize} new samples) ---")
 
             # Build design matrix
-            A, weights = build_design_matrix(train_X[picked, :], Lambda)
+            A, weights = build_design_matrix(train_X[all_picked, :], Lambda)
             A = A / np.sqrt(m)
-            b = train_sol[picked, :] / np.sqrt(m)
+            b = train_sol[all_picked, :] / np.sqrt(m)
 
             # Move to GPU
             A_gpu = cp.asarray(A)
             b_gpu = cp.asarray(b)
             w_gpu = cp.asarray(weights)
+
             del A, b
             gc.collect()
 
@@ -196,8 +197,6 @@ def main():
 
             # Solver parameters
             lamb1 = 1.0 / np.sqrt(25 * m)
-            if norm_type == "l4":
-                lamb1 *= 1e-3  # extra scaling for L4 (matches original BSNQ code)
             step = 1.0 / A_norm
             r = math.e ** (-1)
             T = int(np.ceil(2 * A_norm / r))
@@ -206,7 +205,7 @@ def main():
 
             print(f"  A_norm={A_norm:.2f} | T={T} | R={R}")
 
-            # ── Solve ──
+            
             cbar, rel_errors = PDR_gpu(
                 A_gpu, b_gpu, w_gpu, lamb1, step, step,
                 T, R, tol, r, s, b_norm, m, K, N, norm_fn
@@ -234,7 +233,7 @@ def main():
             print(f"  Relative {norm_type.upper()} error: {rel_err:.6e}")
 
             # ── Save ──
-            sid = min(42, test_sol.shape[0] - 1)  # safe sample index
+            sid = min(42, test_sol.shape[0] - 1)  
             sio.savemat(os.path.join(outdir, f"trial_{trial+1}_m{m}.mat"), {
                 "cbar": cbar, "Lambda": Lambda,
                 "m": m, "dim": dim, "N_basis": N, "pmax": pmax,
@@ -254,5 +253,3 @@ def main():
     print("\nDone.")
 
 
-if __name__ == "__main__":
-    main()
