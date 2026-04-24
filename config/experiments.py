@@ -22,9 +22,9 @@ BOUSSINESQ = {
     "folder":       "boussinesq",       # folder name in DATASETS/ and RESULTS/
     "dim":          8,
     "meshname":     "box3d.xml",
-    "seed":         15,
+    "seed":         42,
     "pmax":         40,
-    "max_iter":     2500,
+    "max_iter":     4000,
     "tol":          1e-8,
     "m_schedule":   [100, 500, 1000],   # must be ascending
     "total_trials": 3,
@@ -62,15 +62,15 @@ BOUSSINESQ = {
 
 NSB = {
     "folder":       "nsb",
-    "dim":          11,
+    "dim":          8,
     "meshname":     "meshes/poisson.xml",
-    "seed":         15,
+    "seed":         42,
     "pmax":         13,
     "max_iter":     2000,
     "tol":          1e-10,
     "m_schedule":   [500],
     "total_trials": 1,
-    "valid_keys":   ["aff_S3"],
+    "valid_keys":   ["logKL", "aff_S3", "aff_F9"],
 
     "variables": {
         "u": {

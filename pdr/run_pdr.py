@@ -3,11 +3,8 @@ run_pdr.py
 ----------
 Single entry point for all PDR experiments.
 
-    python -m SPOL.pdr.run_pdr --experiment bsnq --variable u --m_schedule 100 500 1000
-    python -m SPOL.pdr.run_pdr --experiment nsb  --variable p --m_schedule 500
-    python -m SPOL.pdr.run_pdr --experiment bsnq --variable phi --m_schedule 100 500 1000
+    python -m pdr.run_pdr --experiment nsb --variable p --key aff_S3 --dim 8 --level 3 --norm l2 --m_schedule 100 200 > output.log
 
-Replaces:  BSNQ_PDR_U.py, BSNQ_PDR_P.py, BSNQ_PDR_phi.py, NSB_PDR_U.py, NSB_PDR_P.py
 """
 
 import os, math, gc, argparse, yaml
@@ -16,7 +13,6 @@ from datetime import datetime
 import numpy as np
 import cupy as cp
 import scipy.io as sio
-
 from config.experiments import get_experiment, build_data_dir, build_results_dir
 from utils.data_io import load_data
 from utils.fenics_setup import load_mesh, build_norm_function, build_mass_diagonal
@@ -24,26 +20,27 @@ from pdr.legendre import multiidx_gen, build_design_matrix, hyperbolic_cross_rul
 from pdr.norms import compute_l4_norms, compute_l2_norms
 from pdr.solvers import PDR_gpu
 
+def make_norm_callables(norm_type, uh):
+    """
+    Return (norm_fn, test_error_fn). Both use FEniCS.
 
-# ──────────────────────────────────────────
-#  Norm-function builders
-# ──────────────────────────────────────────
+    norm_fn(x_gpu)     : cupy (n, K) -> cupy (n,)
+    test_error_fn(err) : numpy (m, K) -> numpy (m,)
+    """
+    if norm_type == "l4":
+        compute = compute_l4_norms
+    elif norm_type == "l2":
+        compute = compute_l2_norms
+    else:
+        raise ValueError(f"Unknown --norm: {norm_type!r} (expected 'l4' or 'l2')")
 
-def make_l4_norm_fn(fn):
-    """Build a norm_fn closure for L4 (CPU roundtrip via FEniCS)."""
     def norm_fn(x_gpu):
-        return cp.asarray(compute_l4_norms(cp.asnumpy(x_gpu), fn))
-    return norm_fn
+        return cp.asarray(compute(cp.asnumpy(x_gpu), uh))
 
+    def test_error_fn(err_cpu):
+        return compute(err_cpu, uh)
 
-def make_l2_norm_fn(V):
-    """Build a norm_fn closure for L2 (GPU, mass-matrix diagonal)."""
-    diag = build_mass_diagonal(V)
-    W_gpu = cp.asarray(np.diag(diag))  # sparse would be better for large problems
-    def norm_fn(x_gpu):
-        Mx = W_gpu @ x_gpu.T
-        return cp.sqrt(cp.sum(x_gpu.T * Mx, axis=0))
-    return norm_fn
+    return norm_fn, test_error_fn
 
 
 # ──────────────────────────────────────────
@@ -59,17 +56,21 @@ if __name__ == "__main__":
                         help="Variable to recover: u, p, phi")
     parser.add_argument("--key",        type=str, required=True,
                         help="Coefficient key: logKL, aff_S3, aff_F9")
+    parser.add_argument("--dim",        type=int, default=8,
+                        help="Parameter dimension")
     parser.add_argument("--level",      type=int, default=3,
                         help=" sparse grid level")
     parser.add_argument("--m_schedule", type=int, nargs="+", default=None,
                         help="Training sample schedule (ascending)")
-    parser.add_argument("--seed",       type=int, default=None)
+    parser.add_argument("--seed", type=int,  default=42)
+    parser.add_argument("--norm", type=str, required=True, default=None)
     parser.add_argument("--total_trials", type=int, default=None)
     args = parser.parse_args()
 
     # ── Load config ──
     cfg = get_experiment(args.experiment)
     var_cfg = cfg["variables"][args.variable]
+    space = var_cfg["space"]
 
     # Validate key
     if args.key not in cfg["valid_keys"]:
@@ -78,17 +79,16 @@ if __name__ == "__main__":
             f"Options: {cfg['valid_keys']}"
         )
 
-    dim        = cfg["dim"]
+    dim        = args.dim
     meshname   = cfg["meshname"]
-    seed       = args.seed or cfg["seed"]
+    seed       = args.seed 
     pmax       = cfg["pmax"]
     max_iter   = cfg["max_iter"]
     tol        = cfg["tol"]
     m_schedule = args.m_schedule or cfg["m_schedule"]
     trials     = args.total_trials or cfg["total_trials"]
     data_dir   = build_data_dir(cfg["folder"], args.key, dim, args.level)
-    norm_type  = var_cfg["norm_type"]
-    m_train = sum(m_schedule)
+    norm_type  = args.norm or cfg["norm_fn"]
 
     # Validate schedule
     if len(m_schedule) > 1:
@@ -104,8 +104,10 @@ if __name__ == "__main__":
         )
 
     # ── Output directory ──
-    outdir = build_results_dir(cfg["folder"], args.variable, args.key, dim)
-    os.makedirs(outdir)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_outdir = build_results_dir(cfg["folder"], args.variable, args.key, dim)
+    outdir = os.path.join(base_outdir, f"level{args.level}_{timestamp}")
+    os.makedirs(outdir, exist_ok=True)
 
     # Save config for reproducibility
     with open(os.path.join(outdir, "config.yaml"), "w") as f:
@@ -117,6 +119,12 @@ if __name__ == "__main__":
             "norm_type": norm_type, "meshname": meshname,
             "data_dir": data_dir,
     }, f, sort_keys=False)
+        
+    # ── FEniCS setup: build uh once, then the norm callables ──
+    mesh = load_mesh(meshname)
+    uh   = build_norm_function(mesh, space)       # FE function matching the variable
+    norm_fn, test_error_fn = make_norm_callables(norm_type, uh)    
+    
 
     # ── Load data ──
     # load_data auto-detects HDF5 vs legacy .mat
@@ -128,61 +136,38 @@ if __name__ == "__main__":
     print("Loading test data...")
     test = load_data(data_dir, "test", coeff_key, norm_key)
 
-    train_sol = train["solutions"]   # (m_pool, K)
-    train_X   = train["params"]      # (m_pool, dim)
+    train_sol = train["solutions"]   # (m_train, K)
+    train_X   = train["params"]      # (m_train, dim)
     test_sol  = test["solutions"]    # (m_test, K)
     test_X    = test["params"]       # (m_test, dim)
     test_W    = test["weights"]      # (m_test,)
     test_norms_true = test["norms"]  # (m_test,)
 
     K       = train_sol.shape[1]
+    m_train = train_sol.shape[0]
 
     print(f"Train: {train_sol.shape} | Test: {test_sol.shape} | K={K}")
 
-    # ── FEniCS setup ──
-    mesh = load_mesh(meshname)
-    V, fn = build_norm_function(mesh, var_cfg["space"])
-    print(f"FEniCS space ({var_cfg['space']}): {V.dim()} DOFs")
-
-    if norm_type == "l4":
-        norm_fn = make_l4_norm_fn(fn)
-        test_error_fn = lambda err: compute_l4_norms(err, fn)
-    elif norm_type == "l2":
-        norm_fn = make_l2_norm_fn(V)
-        test_error_fn = lambda err: compute_l2_norms(err, fn)
-    else:
-        raise ValueError(f"Unknown norm_type: {norm_type}")
-
     # ── Legendre basis ──
-    Lambda = multiidx_gen(dim, HCfunc, pmax).astype(int)
+    Lambda = multiidx_gen(dim, hyperbolic_cross_rule, pmax).astype(int)
     N = len(Lambda)
     print('Generated multi index set Lambda of shape', Lambda.shape)
     print('Using', N, 'basis functions with HC index set')
     d_pow = 2.0 ** dim
+    
+    # ── Evaluate on test set ──
+    Psi_test, _ = build_design_matrix(test_X, Lambda)
 
     for trial in range(trials):
-        current_seed = seed + trial
-    
-        print(f"\n{'='*60}")
-        print(f"Trial {trial + 1}/{trials} | seed={current_seed}")
-        print(f"{'='*60}")
+        rng = np.random.default_rng(seed + trial)
 
-        rng = np.random.default_rng(current_seed)
-    
-        pool = np.arange(m_train)
-        rng.shuffle(pool)
-    
-        prev_m = 0
         for m in m_schedule:
-            
-            new_picks = pool[prev_m:m] 
-            all_picked = pool[:m]      
-            print(f"\n--- m={m} ({bsize} new samples) ---")
+            picked = rng.choice(m_train, size=m, replace=False)
 
             # Build design matrix
-            A, weights = build_design_matrix(train_X[all_picked, :], Lambda)
+            A, weights = build_design_matrix(train_X[picked, :], Lambda)
             A = A / np.sqrt(m)
-            b = train_sol[all_picked, :] / np.sqrt(m)
+            b = train_sol[picked, :] / np.sqrt(m)
 
             # Move to GPU
             A_gpu = cp.asarray(A)
@@ -197,7 +182,7 @@ if __name__ == "__main__":
 
             # Solver parameters
             lamb1 = 1.0 / np.sqrt(25 * m)
-            step = 1.0 / A_norm
+            step = 1.0 / A_norm             #tau and sigma(MEMS book table 5.1)
             r = math.e ** (-1)
             T = int(np.ceil(2 * A_norm / r))
             s = T / (2 * A_norm)
@@ -216,10 +201,8 @@ if __name__ == "__main__":
             cp.get_default_memory_pool().free_all_blocks()
             gc.collect()
 
-            # ── Evaluate on test set ──
-            Psi_test, _ = build_design_matrix(test_X, Lambda)
+            
             Y_pred = Psi_test @ cbar
-            del Psi_test
             gc.collect()
 
             err = Y_pred - test_sol
@@ -233,22 +216,36 @@ if __name__ == "__main__":
             print(f"  Relative {norm_type.upper()} error: {rel_err:.6e}")
 
             # ── Save ──
-            sid = min(42, test_sol.shape[0] - 1)  
-            sio.savemat(os.path.join(outdir, f"trial_{trial+1}_m{m}.mat"), {
-                "cbar": cbar, "Lambda": Lambda,
-                "m": m, "dim": dim, "N_basis": N, "pmax": pmax,
-                "rel_err": rel_err, "norm_type": norm_type,
-                "true_sample": test_sol[sid],
-                "pred_sample": Y_pred[sid],
-                "sample_idx": sid,
-                "rel_errors_history": np.array(rel_errors),
-            })
+            sid = min(42, test_sol.shape[0] - 1)
+            
+            
+            if trial == 0:  # Save test set predictions only for the first trial to save space
+              
+                sio.savemat(os.path.join(outdir, f"trial_{trial+1}_m{m}.mat"), {
+                    "cbar": cbar, "Lambda": Lambda,
+                    "m": m, "dim": dim, "N_basis": N, "pmax": pmax,
+                    "rel_err": rel_err, "norm_type": args.norm,
+                    "true_sample": test_sol[sid],
+                    "pred_sample": Y_pred[sid],
+                    "sample_idx": sid,
+                    "rel_errors_history": np.array(rel_errors),
+                })
+            else:
+                sio.savemat(os.path.join(outdir, f"trial_{trial+1}_m{m}.mat"), {
+                    "Lambda": Lambda,
+                    "m": m, "dim": dim, "N_basis": N, "pmax": pmax,
+                    "rel_err": rel_err, "norm_type": args.norm,
+                    "true_sample": test_sol[sid],
+                    "pred_sample": Y_pred[sid],
+                    "sample_idx": sid,
+                    "rel_errors_history": np.array(rel_errors),
+                })
 
-            prev_m = m
+            
             del Y_pred, cbar
             gc.collect()
 
-        seed += 1  # different seed per trial
+        
 
     print("\nDone.")
 

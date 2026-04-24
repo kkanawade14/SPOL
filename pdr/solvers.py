@@ -25,7 +25,7 @@ Usage:
 
 import cupy as cp
 import numpy as np
-
+from . norms import compute_l4_norms, compute_l2_norms
 
 def PD_srlasso_gpu(A, b, weights, lamb1, tau, sigma, T, c, xi, N, norm_fn):
     """
@@ -41,6 +41,7 @@ def PD_srlasso_gpu(A, b, weights, lamb1, tau, sigma, T, c, xi, N, norm_fn):
     c, xi     : cupy arrays — initial primal (N, K) / dual (m, K)
     N         : int   — number of basis functions
     norm_fn   : callable — maps cupy (n, K) → cupy (n,) norms
+    
 
     Returns
     -------
@@ -50,6 +51,7 @@ def PD_srlasso_gpu(A, b, weights, lamb1, tau, sigma, T, c, xi, N, norm_fn):
     cbar = c.copy()
     bnorm = float(cp.linalg.norm(b))
     rel_errors = []
+    
 
     for n in range(T):
         # ── Primal step ──

@@ -11,6 +11,8 @@ logs/
 *.pt
 *.pth
 *.log
+*.yaml
+*.json
 
 # Python cache
 __pycache__/
