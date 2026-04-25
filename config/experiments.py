@@ -24,10 +24,10 @@ BOUSSINESQ = {
     "meshname":     "box3d.xml",
     "seed":         42,
     "pmax":         40,
-    "max_iter":     4000,
-    "tol":          1e-8,
+    "max_iter":     5000,
+    "tol":          1e-10,
     "m_schedule":   [100, 500, 1000],   # must be ascending
-    "total_trials": 3,
+    "total_trials": 10,
     "valid_keys":   ["logKL", "aff_S3", "aff_F9"],
 
     # Which variables can we recover, and how?
@@ -68,8 +68,8 @@ NSB = {
     "pmax":         13,
     "max_iter":     2000,
     "tol":          1e-10,
-    "m_schedule":   [500],
-    "total_trials": 1,
+    "m_schedule":   [100, 200, 300, 400, 500],
+    "total_trials": 10,
     "valid_keys":   ["logKL", "aff_S3", "aff_F9"],
 
     "variables": {

@@ -146,13 +146,13 @@ if __name__ == "__main__":
     K       = train_sol.shape[1]
     m_train = train_sol.shape[0]
 
-    print(f"Train: {train_sol.shape} | Test: {test_sol.shape} | K={K}")
+    print(f"Train: {train_sol.shape} | Test: {test_sol.shape} | K={K}", flush=True)
 
     # ── Legendre basis ──
     Lambda = multiidx_gen(dim, hyperbolic_cross_rule, pmax).astype(int)
     N = len(Lambda)
-    print('Generated multi index set Lambda of shape', Lambda.shape)
-    print('Using', N, 'basis functions with HC index set')
+    print('Generated multi index set Lambda of shape', Lambda.shape, flush=True)
+    print('Using', N, 'basis functions with HC index set', flush=True)
     d_pow = 2.0 ** dim
     
     # ── Evaluate on test set ──
@@ -160,7 +160,7 @@ if __name__ == "__main__":
 
     for trial in range(trials):
         rng = np.random.default_rng(seed + trial)
-        print(f"\nTrial {trial + 1} out of {trials}")
+        print(f"\nTrial {trial + 1} out of {trials}", flush=True)
 
         for m in m_schedule:
             picked = rng.choice(m_train, size=m, replace=False)
@@ -220,7 +220,7 @@ if __name__ == "__main__":
             # ── Save ──
             sid = min(42, test_sol.shape[0] - 1)
             
-            
+
             if trial == 0:  # Save test set predictions only for the first trial to save space
               
                 sio.savemat(os.path.join(outdir, f"trial_{trial+1}_m{m}.mat"), {
