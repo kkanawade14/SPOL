@@ -3,7 +3,7 @@ run_pdr.py
 ----------
 Single entry point for all PDR experiments.
 
-    python -m pdr.run_pdr --experiment nsb --variable p --key aff_S3 --dim 8 --level 3 --norm l2 --m_schedule 100 200 > output.log
+    python -m pdr.run_pdr --experiment nsb --variable p --key aff_S3 --dim 8 --level 3 --norm l2 --m_schedule 100 200 300 400 500 > output.log
 
 """
 
@@ -160,9 +160,11 @@ if __name__ == "__main__":
 
     for trial in range(trials):
         rng = np.random.default_rng(seed + trial)
+        print(f"\nTrial {trial + 1} out of {trials}")
 
         for m in m_schedule:
             picked = rng.choice(m_train, size=m, replace=False)
+            print(f"  Training sample size m = {m}")
 
             # Build design matrix
             A, weights = build_design_matrix(train_X[picked, :], Lambda)
@@ -244,7 +246,7 @@ if __name__ == "__main__":
             
             del Y_pred, cbar
             gc.collect()
-
+    
         
 
     print("\nDone.")

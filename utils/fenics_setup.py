@@ -42,7 +42,7 @@ def build_norm_function(mesh, space_type):
             f"Unknown space type '{space_type}'. Options: {list(builders.keys())}"
         )
     V = builders[space_type](mesh)
-    return V, Function(V)
+    return Function(V)
 
 
 def build_mass_diagonal(V):
