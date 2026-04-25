@@ -50,21 +50,34 @@ def make_norm_callables(norm_type, uh):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="PDR recovery experiment")
+
     parser.add_argument("--experiment", type=str, required=True,
                         help="Experiment name: bsnq, nsb")
-    parser.add_argument("--variable",   type=str, required=True,
+
+    parser.add_argument("--variable", type=str, required=True,
                         help="Variable to recover: u, p, phi")
-    parser.add_argument("--key",        type=str, required=True,
+
+    parser.add_argument("--key", type=str, required=True,
                         help="Coefficient key: logKL, aff_S3, aff_F9")
-    parser.add_argument("--dim",        type=int, default=8,
+
+    parser.add_argument("--dim", type=int, default=8,
                         help="Parameter dimension")
-    parser.add_argument("--level",      type=int, default=3,
-                        help=" sparse grid level")
-    parser.add_argument("--m_schedule", type=int, nargs="+", default=None,
-                        help="Training sample schedule (ascending)")
-    parser.add_argument("--seed", type=int,  default=42)
-    parser.add_argument("--norm", type=str, required=True, default=None)
-    parser.add_argument("--total_trials", type=int, default=None)
+
+    parser.add_argument("--level", type=int, default=3,
+                        help="Sparse grid level")
+
+    parser.add_argument("--m_schedule", type=int, nargs="+", required=True,
+                        help="Training sample schedule, e.g. --m_schedule 100 200 300 400 500")
+
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed")
+
+    parser.add_argument("--norm", type=str, required=True, choices=["l2", "l4"],
+                        help="Norm type")
+
+    parser.add_argument("--total_trials", type=int, default=10,
+                        help="Number of random trials")
+
     args = parser.parse_args()
 
     # ── Load config ──
@@ -85,10 +98,10 @@ if __name__ == "__main__":
     pmax       = cfg["pmax"]
     max_iter   = cfg["max_iter"]
     tol        = cfg["tol"]
-    m_schedule = args.m_schedule or cfg["m_schedule"]
-    trials     = args.total_trials or cfg["total_trials"]
+    m_schedule = args.m_schedule
+    trials     = args.total_trials
     data_dir   = build_data_dir(cfg["folder"], args.key, dim, args.level)
-    norm_type  = args.norm or cfg["norm_fn"]
+    norm_type  = args.norm
 
     # Validate schedule
     if len(m_schedule) > 1:
@@ -106,7 +119,7 @@ if __name__ == "__main__":
     # ── Output directory ──
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_outdir = build_results_dir(cfg["folder"], args.variable, args.key, dim)
-    outdir = os.path.join(base_outdir, f"level{args.level}_{timestamp}")
+    outdir = os.path.join(base_outdir, f"level{args.level}")
     os.makedirs(outdir, exist_ok=True)
 
     # Save config for reproducibility
@@ -159,12 +172,18 @@ if __name__ == "__main__":
     Psi_test, _ = build_design_matrix(test_X, Lambda)
 
     for trial in range(trials):
-        rng = np.random.default_rng(seed + trial)
-        print(f"\nTrial {trial + 1} out of {trials}", flush=True)
+        np.random.seed(seed + trial)
+
+        picked, pool, prev_m = np.array([], dtype=int), np.arange(m_train, dtype=int), 0
 
         for m in m_schedule:
-            picked = rng.choice(m_train, size=m, replace=False)
-            print(f"  Training sample size m = {m}")
+            bsize = m - prev_m
+            idx = np.random.choice(len(pool), size=bsize, replace=False)
+
+            picked = np.concatenate([picked, pool[idx]])
+            pool = np.delete(pool, idx)
+
+            print(f"Trial {trial+1}/{trials}, m={m}", flush=True)
 
             # Build design matrix
             A, weights = build_design_matrix(train_X[picked, :], Lambda)
@@ -190,7 +209,7 @@ if __name__ == "__main__":
             s = T / (2 * A_norm)
             R = int(np.ceil(max_iter / T))
 
-            print(f"  A_norm={A_norm:.2f} | T={T} | R={R}")
+            print(f"  A_norm={A_norm:.2f} | T={T} | R={R}", flush=True)
 
             
             cbar, rel_errors = PDR_gpu(
@@ -215,11 +234,11 @@ if __name__ == "__main__":
             denom     = np.sqrt(np.abs(np.dot(test_norms_true ** 2, test_W)) / d_pow)
             rel_err   = numerator / denom
 
-            print(f"  Relative {norm_type.upper()} error: {rel_err:.6e}")
+            print(f"  Relative {norm_type.upper()} error: {rel_err:.6e}", flush=True)
 
             # ── Save ──
             sid = min(42, test_sol.shape[0] - 1)
-            
+            prev_m = m
 
             if trial == 0:  # Save test set predictions only for the first trial to save space
               
